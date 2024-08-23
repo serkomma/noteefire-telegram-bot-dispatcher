@@ -1,24 +1,27 @@
 package com.serkomma.dispatcher.controller;
 
-import com.serkomma.dispatcher.exceptions.WrongCommandException;
+import com.serkomma.dispatcher.entities.CachedNotificationEntity;
+import com.serkomma.dispatcher.exceptions.TelegramBotException;
 import com.serkomma.dispatcher.services.ScheduleHandler;
 import com.serkomma.dispatcher.services.UpdateHandler;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
+import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Controller;
-import org.springframework.web.bind.annotation.ControllerAdvice;
-import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RestController;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
-import java.util.ArrayList;
 import java.util.List;
-@Controller
+@RestController
 public class TelegramBotController extends TelegramLongPollingBot {
+    @Autowired
+    private ApplicationContext context;
 
     public TelegramBotController(@Value("${bot.token}")String botToken){
         super(botToken);
@@ -29,40 +32,12 @@ public class TelegramBotController extends TelegramLongPollingBot {
         var handler = getHandler(update);
         try {
             send(handler.handle(update));
-        } catch (Exception e){
+        } catch (TelegramBotException e){
             var response = new SendMessage();
             response.setChatId(update.getMessage().getChatId().toString());
             response.setText(e.getMessage());
             send(response);
         }
-//        var text = update.getMessage().getText();
-//        System.out.println(text);
-//        var response = new SendMessage();
-//        response.setChatId(update.getMessage().getChatId().toString());
-//        response.setText("Сам " + text);
-//
-//        List<InlineKeyboardButton> rowbuttons = new ArrayList<>();
-//        List<List<InlineKeyboardButton>> rowsbuttons = new ArrayList<>();
-//        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
-//
-//        var button_me = new InlineKeyboardButton();
-//        button_me.setText("Пойти нахуй");
-//        button_me.setCallbackData("QW");
-//        var button_so = new InlineKeyboardButton();
-//        button_so.setText("Тоже пойти нахуй");
-//        button_so.setCallbackData("AS");
-//
-//        rowbuttons.add(button_me);
-//        rowbuttons.add(button_so);
-//        rowsbuttons.add(rowbuttons);
-//        inlineKeyboardMarkup.setKeyboard(rowsbuttons);
-//
-//        response.setReplyMarkup(inlineKeyboardMarkup);
-//        try {
-//            execute(response);
-//        } catch (TelegramApiException e){
-//            System.out.println(e.getMessage());
-//        }
     }
 
     @Override
@@ -82,7 +57,8 @@ public class TelegramBotController extends TelegramLongPollingBot {
 
     private UpdateHandler getHandler(Update update){
         // todo
-        return new ScheduleHandler();
+//        return new ScheduleHandler(context.getBean(CachedNotificationRepository.class));
+        return context.getBean(ScheduleHandler.class);
     }
 //    @ExceptionHandler(WrongCommandException.class)
     public void send(SendMessage message){
@@ -91,5 +67,15 @@ public class TelegramBotController extends TelegramLongPollingBot {
         } catch (TelegramApiException tae){
 
         }
+    }
+
+    @PostMapping("/")
+    public void notificationSend(
+            @RequestHeader long chatId,
+            @RequestBody CachedNotificationEntity cachedNotificationEntity){
+        var response = new SendMessage();
+        response.setChatId(chatId);
+        response.setText(cachedNotificationEntity.getNotification());
+        send(response);
     }
 }
