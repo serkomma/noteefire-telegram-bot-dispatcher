@@ -18,7 +18,7 @@ public class CachedNotificationEntity implements Serializable {
 //    @Id
 //    private  long id;
     @Id
-    private long chatId;
+    private long chatid;
     private String notification;
     private LocalDate date;
     private LocalTime time;

@@ -2,6 +2,7 @@ package com.serkomma.dispatcher.services;
 
 import com.serkomma.dispatcher.entities.CachedNotificationEntity;
 import com.serkomma.dispatcher.entities.CachedUserEntity;
+import com.serkomma.dispatcher.entities.OpensearchNotificationEntity;
 import com.serkomma.dispatcher.exceptions.TelegramBotException;
 import com.serkomma.dispatcher.exceptions.WrongCommandException;
 import com.serkomma.dispatcher.exceptions.WrongDataException;
@@ -14,13 +15,16 @@ import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.MaybeInaccessibleMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 @Component
 public class ScheduleHandler implements UpdateHandler{
@@ -28,10 +32,18 @@ public class ScheduleHandler implements UpdateHandler{
     final private CachedNotificationRepository cachedNotificationRepository;
     final private CachedUserRepository cachedUserRepository;
     final private NotificationProxy notificationProxy;
-    public ScheduleHandler(CachedNotificationRepository cachedNotificationRepository, CachedUserRepository cachedUserRepository, NotificationProxy notificationProxy){
+    final private LogstashProxy logstashProxy;
+    final private OpehsearchProxy opensearchProxy;
+    public ScheduleHandler(CachedNotificationRepository cachedNotificationRepository,
+                           CachedUserRepository cachedUserRepository,
+                           NotificationProxy notificationProxy,
+                           LogstashProxy logstashProxy,
+                           OpehsearchProxy opensearchProxy){
         this.cachedNotificationRepository = cachedNotificationRepository;
         this.cachedUserRepository = cachedUserRepository;
         this.notificationProxy = notificationProxy;
+        this.logstashProxy = logstashProxy;
+        this.opensearchProxy = opensearchProxy;
     }
     @Override
     public SendMessage handle(Update update) throws TelegramBotException {
@@ -39,8 +51,10 @@ public class ScheduleHandler implements UpdateHandler{
             var text = update.getMessage().getText();
             if (text.startsWith("/") && text.matches("[a-zA-Z/]+")) {    // check commands
                 return switch (text) {
-                    case "/start" ->  this.hello(update);
+                    case "/start"  -> this.hello(update);
                     case "/cancel" -> this.hello(update);
+                    case "/show"   -> this.show(update);
+                    case "/search" -> this.askForKeyword(update);
                     default -> throw new WrongCommandException(update, "Неизвестная команда");
                 };
             } else{                                                           // check user's answers
@@ -63,6 +77,9 @@ public class ScheduleHandler implements UpdateHandler{
                     case NEED_TIME -> {
                         this.writeTime(update);
                         return this.confirmation(update);
+                    }
+                    case NEED_KEYWORD -> {
+                        return this.search(update);
                     }
                     default -> throw new WrongCommandException(update, "Неизвестная команда");
                 }
@@ -89,6 +106,9 @@ public class ScheduleHandler implements UpdateHandler{
         var response = new SendMessage();
         String text = """
                 Добро пожаловать в NoteeFire - телеграм бот для планирования напоминаний.
+                /show - показать список ранее запланированных уведомлений
+                /cancel - отмена последовательности ввода данных на любом шаге
+                /search - поиск среди уведомлений по ключевым словам
                 """;
         response.setChatId(update.getMessage().getChatId().toString());
         response.setText(text);
@@ -112,7 +132,7 @@ public class ScheduleHandler implements UpdateHandler{
     private SendMessage askForDate(Update update){
         var response = new SendMessage();
         response.setChatId(update.getMessage().getChatId().toString());
-        response.setText("Введите дату в формате ДД.ММ.ГГГГ %d %s");
+        response.setText("Введите дату в формате ДД.ММ.ГГГГ");
         return response;
 
     }
@@ -120,7 +140,7 @@ public class ScheduleHandler implements UpdateHandler{
     private SendMessage askForTime(Update update){
         var response = new SendMessage();
         response.setChatId(update.getMessage().getChatId().toString());
-        response.setText("Введите время в формате ЧЧ:ММ:СС %s %s");
+        response.setText("Введите время в формате ЧЧ:ММ:СС");
         return response;
     }
 
@@ -139,12 +159,18 @@ public class ScheduleHandler implements UpdateHandler{
         var response = new SendMessage();
         response.setChatId(update.getCallbackQuery().getMessage().getChatId().toString());
         response.setText("Событие сохранено. Ожидайте напоминания");
-        System.out.println(notification.getChatId());
+        System.out.println(notification.getChatid());
         System.out.println(notification.getNotification());
         System.out.println(notification.getDate());
         System.out.println(notification.getTime());
         System.out.println(notification.getStep().ordinal());
-        notificationProxy.save_notification(getChatId(update), notification);           // send to notifier module
+        notificationProxy.save_notification(getChatId(update), notification);         // send to notifier module
+        OpensearchNotificationEntity opensearchNotificationEntity = OpensearchNotificationEntity.builder()
+                        .chatid(notification.getChatid())
+                        .datetime(LocalDateTime.of(notification.getDate(), notification.getTime()))
+                        .notification(notification.getNotification())
+                        .build();
+        logstashProxy.save_notification(getChatId(update), opensearchNotificationEntity);             // send to Logstash
         return response;
     }
 
@@ -178,12 +204,14 @@ public class ScheduleHandler implements UpdateHandler{
         ProcessSteps step = forSomeone ? ProcessSteps.NEED_USERS : ProcessSteps.NEED_TEXT;
         cachedNotificationRepository.save(CachedNotificationEntity
                 .builder()
-                .chatId(update.getCallbackQuery().getMessage().getChatId())
+                .chatid(update.getCallbackQuery().getMessage().getChatId())
                 .step(step)
                 .build());
     }
 
     private void writeText(Update update) throws TelegramBotException{
+        if (update.getMessage().getText().length() > 1024)
+            throw new WrongDataException(update, "Текст уведомдения не должен превышать 1024 символа");
         CachedNotificationEntity entity = cachedNotificationRepository.findById(update.getMessage().getChatId())
                 .orElseThrow(() -> new WrongCommandException(update, "Неверная команда. Введите /start"));
         entity.setNotification(update.getMessage().getText());
@@ -245,6 +273,56 @@ public class ScheduleHandler implements UpdateHandler{
                 .orElseThrow(() -> new WrongCommandException(update, "Неверная команда. Введите /start"));
         entity.setStep(ProcessSteps.NEED_TEXT);
         cachedNotificationRepository.save(entity);
+    }
+
+    public SendMessage show(Update update){
+        var response = new SendMessage();
+        response.setChatId(getChatId(update));
+        StringBuilder stringBuilder = new StringBuilder();
+        notificationProxy.getNotifications(getChatId(update)).forEach(i -> {
+            stringBuilder.append(i.getDateTime().toString());
+            stringBuilder.append(" ");
+            stringBuilder.append(i.getNotification());
+            stringBuilder.append("\n");
+        });
+        response.setText(stringBuilder.toString());
+        System.out.println(stringBuilder);
+        return response;
+    }
+
+    public SendMessage askForKeyword(Update update){
+        cachedNotificationRepository.save(CachedNotificationEntity
+                .builder()
+                .chatid(getChatId(update))
+                .step(ProcessSteps.NEED_KEYWORD)
+                .build());
+        var response = new SendMessage();
+        response.setChatId(getChatId(update));
+        response.setText("Введите ключевое слово");
+        return response;
+    }
+
+    public SendMessage search(Update update){
+        clearCache(update);
+        var response = new SendMessage();
+        response.setChatId(getChatId(update));
+        StringBuilder stringBuilder = new StringBuilder();
+        String urlText = java.net.URLEncoder.encode(update.getMessage().getText(), StandardCharsets.UTF_8);
+        Map<String, String> data = Map
+                .of("Content-Type", "text/html; charset=utf-8",
+                        "chatid", String.valueOf(getChatId(update)), "phrase",urlText);
+        opensearchProxy.search(data).forEach(i -> {
+            stringBuilder.append(i.getDatetime().toString());
+            stringBuilder.append(" ");
+            stringBuilder.append(i.getNotification());
+            stringBuilder.append("\n");
+        });
+        if (stringBuilder.isEmpty())
+            response.setText("Ничего не найдено");
+        else
+            response.setText(stringBuilder.toString());
+        System.out.println(stringBuilder);
+        return response;
     }
 
     public void getUsers(Update update){

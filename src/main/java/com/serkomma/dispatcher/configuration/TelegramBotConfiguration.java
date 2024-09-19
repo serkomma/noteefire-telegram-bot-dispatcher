@@ -25,11 +25,5 @@ public class TelegramBotConfiguration {
         template.setConnectionFactory(connectionFactory);
         return template;
     }
-
-//    @Bean
-//    public RedisKeyValueTemplate redisKeyValueTemplateTemplate(RedisConnectionFactory connectionFactory){
-//        RedisKeyValueTemplate template = new RedisKeyValueTemplate();
-//        return template;
-//    }
 }
 

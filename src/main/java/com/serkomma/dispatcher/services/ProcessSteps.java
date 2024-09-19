@@ -5,5 +5,6 @@ public enum ProcessSteps {
     NEED_TEXT,
     NEED_DATE,
     NEED_TIME,
-    READY
+    READY,
+    NEED_KEYWORD
 }
